@@ -57,6 +57,18 @@ def process_uploaded_files(uploaded_files):
 
     return vectorstore, len(chunks)
 
+
+def format_semantic_results(results):
+    """Formate les chunks retrouvés en extraits bruts + source (Étape 3)."""
+    if not results:
+        return "Aucun extrait pertinent trouvé dans les documents indexés."
+
+    parts = []
+    for i, doc in enumerate(results, start=1):
+        source = doc.metadata.get("source", "source inconnue")
+        parts.append(f"**Extrait {i}** — *source : {source}*\n\n> {doc.page_content}")
+    return "\n\n---\n\n".join(parts)
+
 st.set_page_config(page_title="RAG Local - Clone NotebookLM", layout="wide")
 
 st.title("📚 Assistant RAG Local")
@@ -118,9 +130,20 @@ if prompt := st.chat_input("Posez une question sur vos documents..."):
     # Placeholder de réponse : sera remplacé par la vraie logique
     # de recherche (Étape 3) et de génération LLM (Étape 4)
     with st.chat_message("assistant"):
-        response = (
-            "⚠️ Backend non branché pour le moment "
-            "(Étape 1 : squelette d'interface uniquement)."
-        )
-        st.markdown(response)
+        if "vectorstore" not in st.session_state:
+            response = "⚠️ Veuillez d'abord indexer au moins un document."
+            st.markdown(response)
+
+        elif not use_llm:
+            # Mode Recherche Sémantique pure : aucun appel à un modèle
+            # génératif, on retourne les chunks bruts les plus proches.
+            results = st.session_state.vectorstore.similarity_search(prompt, k=4)
+            response = format_semantic_results(results)
+            st.markdown(response)
+
+        else:
+            # Mode RAG complet : sera branché à l'Étape 4
+            response = "⚠️ Mode RAG complet pas encore branché (Étape 4 à venir)."
+            st.markdown(response)
+
     st.session_state.messages.append({"role": "assistant", "content": response})
