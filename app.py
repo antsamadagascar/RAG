@@ -1,3 +1,20 @@
+"""
+TP - Système RAG Local (Clone de NotebookLM)
+Master 1 - Introduction et Pratique de l'IA
+
+Auteur : Ratovonandrasana Aina Ny Antsa (ETU002754)
+
+Application Streamlit permettant d'indexer des documents (PDF, TXT, MD)
+et d'interagir avec leur contenu selon deux modes :
+  - Recherche Sémantique pure : extraits bruts, sans appel à un LLM
+  - Assistant RAG complet : génération contrainte au contexte, via un
+    modèle local servi par Ollama
+
+Aucun appel à une API externe : l'ensemble du traitement (embeddings,
+recherche vectorielle, génération) s'exécute en local pour garantir la
+confidentialité des documents chargés.
+"""
+
 import os
 import tempfile
 
@@ -76,6 +93,18 @@ def process_uploaded_files(uploaded_files):
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
     chunks = text_splitter.split_documents(all_docs)
 
+    # Déduplique les chunks au texte strictement identique : certains PDF
+    # contiennent le même passage deux fois dans leur flux de texte brut
+    # (mise en page avec calques dupliqués, effets de style, etc.), ce qui
+    # produit sinon des chunks parfaitement identiques dans la base.
+    seen_texts = set()
+    unique_chunks = []
+    for chunk in chunks:
+        if chunk.page_content not in seen_texts:
+            seen_texts.add(chunk.page_content)
+            unique_chunks.append(chunk)
+    chunks = unique_chunks
+
     embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
 
     # Chroma est utilisé en mémoire (sans persist_directory) : la base est
@@ -108,9 +137,10 @@ def build_context(results):
         for doc in results
     )
 
-st.set_page_config(page_title="RAG Local - Clone NotebookLM", layout="wide")
+st.set_page_config(page_title="Assistant Documentaire Local", layout="wide")
 
-st.title("📚 Assistant RAG Local")
+st.title("Assistant Documentaire Local")
+st.caption("Système RAG local — Ratovonandrasana Aina Ny Antsa (ETU002754)")
 
 # ---------- BARRE LATÉRALE ----------
 with st.sidebar:
@@ -122,23 +152,43 @@ with st.sidebar:
         accept_multiple_files=True,
     )
 
-    index_button = st.button("📥 Indexer les documents")
+    index_button = st.button("Indexer les documents")
 
     if index_button:
         if not uploaded_files:
             st.warning("Veuillez d'abord charger au moins un document.")
+            # Si l'utilisateur a retiré tous les fichiers puis réindexé,
+            # on vide aussi l'ancienne base et l'historique du chat en
+            # mémoire : sinon les questions déjà affichées continueraient
+            # de montrer des réponses fondées sur un contenu que
+            # l'utilisateur pense pourtant avoir supprimé.
+            st.session_state.pop("vectorstore", None)
+            st.session_state.pop("nb_chunks", None)
+            st.session_state.messages = []
         else:
+            # Déduplique par nom de fichier : si le même fichier a été
+            # ajouté deux fois dans l'uploader (par erreur), on ne veut
+            # l'indexer qu'une seule fois pour éviter des chunks dupliqués.
+            unique_files = list({f.name: f for f in uploaded_files}.values())
+
             with st.spinner("Extraction, découpage et vectorisation en cours..."):
-                vectorstore, nb_chunks = process_uploaded_files(uploaded_files)
+                vectorstore, nb_chunks = process_uploaded_files(unique_files)
                 st.session_state.vectorstore = vectorstore
                 st.session_state.nb_chunks = nb_chunks
+                # On efface aussi l'historique de conversation : les
+                # anciens échanges faisaient référence à l'ancienne base
+                # de documents. Les garder affichés après un changement
+                # de base créerait une confusion entre une réponse
+                # obsolète et une nouvelle réponse fondée sur les
+                # documents actuellement indexés.
+                st.session_state.messages = []
             st.success(
-                f"{len(uploaded_files)} document(s) indexé(s) "
-                f"en {nb_chunks} fragments."
+                f"{len(unique_files)} document(s) indexé(s) "
+                f"en {nb_chunks} fragments. Nouvelle conversation."
             )
 
     if "vectorstore" in st.session_state:
-        st.caption(f"✅ Base indexée : {st.session_state.nb_chunks} fragments")
+        st.caption(f"Base indexée : {st.session_state.nb_chunks} fragments")
 
     st.divider()
 
