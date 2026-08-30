@@ -17,15 +17,17 @@ confidentialité des documents chargés.
 
 import os
 import tempfile
+import uuid
 
 import streamlit as st
-from langchain_community.document_loaders import PyMuPDFLoader, TextLoader
+from langchain_community.document_loaders import PyMuPDFLoader
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.llms import Ollama
 from langchain_community.vectorstores import Chroma
 from langchain_core.documents import Document
 from langchain_core.prompts import PromptTemplate
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+
 
 # ============================================================
 # ÉTAPE 1 : Squelette de l'interface
@@ -34,9 +36,11 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 # ÉTAPE 4 : Mode RAG complet (retrieval + génération contrainte)
 # ============================================================
 
+
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-OLLAMA_MODEL = "qwen2.5-coder:1.5b"  # doit correspondre au modèle chargé via `ollama pull`
+OLLAMA_MODEL = "qwen2.5-coder:1.5b"  #  correspond au modèle chargé via `ollama pull`
 RETRIEVAL_K = 4  # nombre de chunks les plus proches récupérés par question
+
 
 RAG_PROMPT_TEMPLATE = PromptTemplate(
     input_variables=["context", "question"],
@@ -54,6 +58,41 @@ RAG_PROMPT_TEMPLATE = PromptTemplate(
 )
 
 
+def read_text_with_fallback(path):
+    """Lit un fichier texte en essayant plusieurs encodages dans l'ordre.
+
+    Les fichiers .txt/.md ne sont pas toujours en UTF-8 : certains outils
+    Windows (ex: exports système) écrivent en UTF-16, d'autres en
+    Windows-1252. Piège découvert en testant : du texte UTF-16 à dominante
+    ASCII peut se décoder "sans erreur" en UTF-8 (avec des octets nuls
+    invisibles entre chaque caractère), ce qui fait accepter à tort le
+    mauvais encodage. On détecte donc explicitement l'UTF-16 en premier
+    (BOM, ou forte proportion d'octets nuls) avant de tenter le reste.
+    """
+    raw_bytes = open(path, "rb").read()
+
+    has_utf16_bom = raw_bytes.startswith(b"\xff\xfe") or raw_bytes.startswith(b"\xfe\xff")
+    null_byte_ratio = raw_bytes.count(b"\x00") / max(len(raw_bytes), 1)
+    if has_utf16_bom or null_byte_ratio > 0.2:
+        try:
+            return raw_bytes.decode("utf-16")
+        except UnicodeDecodeError:
+            pass  # pas vraiment de l'UTF-16 malgré les indices, on continue
+
+    for encoding in ("utf-8-sig", "windows-1252", "latin-1"):
+        try:
+            text = raw_bytes.decode(encoding)
+        except (UnicodeDecodeError, UnicodeError):
+            continue
+        if len(text) == 0:
+            continue
+        replacement_ratio = text.count("\ufffd") / len(text)
+        if replacement_ratio < 0.01:  # moins de 1% de caractères illisibles
+            return text
+    # Dernier recours : décodage permissif, quitte à perdre des caractères
+    return raw_bytes.decode("utf-8", errors="ignore")
+
+
 def process_uploaded_files(uploaded_files):
     """Extrait, découpe et vectorise les fichiers uploadés. Retourne le vectorstore."""
     all_docs = []
@@ -68,19 +107,11 @@ def process_uploaded_files(uploaded_files):
             tmp_path = tmp_file.name
 
         if suffix == ".pdf":
-            loader = PyMuPDFLoader(tmp_path)
+            docs = PyMuPDFLoader(tmp_path).load()
+            full_text = "\n".join(doc.page_content for doc in docs)
         else:  # .txt, .md
-            loader = TextLoader(tmp_path, encoding="utf-8")
+            full_text = read_text_with_fallback(tmp_path)
 
-        docs = loader.load()
-
-        # Les PDF sont chargés page par page (un Document par page). On
-        # fusionne tout le texte du fichier en UN SEUL Document avant le
-        # chunking : sinon le chunk_overlap ne peut jamais chevaucher deux
-        # pages, et un passage coupé pile à un saut de page (ex: un bloc de
-        # code qui commence en haut de la page suivante) est irrémédiablement
-        # séparé de son contexte.
-        full_text = "\n".join(doc.page_content for doc in docs)
         all_docs.append(
             Document(page_content=full_text, metadata={"source": uploaded_file.name})
         )
@@ -90,7 +121,11 @@ def process_uploaded_files(uploaded_files):
     # Chunking : chunk_size=1000 pour garder un paragraphe avec son
     # contexte, chunk_overlap=150 (15%) pour ne pas couper une idée
     # importante pile à la frontière entre deux chunks.
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000,
+        chunk_overlap=150,
+        separators=["\n\n", "\n", ". ", " ", ""],
+    )
     chunks = text_splitter.split_documents(all_docs)
 
     # Déduplique les chunks au texte strictement identique : certains PDF
@@ -107,26 +142,34 @@ def process_uploaded_files(uploaded_files):
 
     embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
 
-    # Chroma est utilisé en mémoire (sans persist_directory) : la base est
-    # de toute façon reconstruite à chaque clic sur "Indexer les documents"
-    # ou à chaque redémarrage de l'app (via st.session_state), donc une
-    # persistance disque n'apporte rien ici. Ça évite aussi un problème de
-    # verrouillage de fichiers sous Windows si on tentait de supprimer une
-    # base précédente encore ouverte par le processus.
-    vectorstore = Chroma.from_documents(chunks, embeddings)
+    # Chroma est utilisé en mémoire (sans persist_directory). On force en
+    # plus un nom de collection UNIQUE à chaque indexation (uuid4) : sans
+    # ça, le client interne de Chroma peut réutiliser une collection par
+    # défaut partagée au sein du même processus Python, ce qui accumule
+    # silencieusement les documents d'une indexation à l'autre tant que le
+    # serveur Streamlit tourne sans interruption — même sans persistance
+    # disque. Un nom unique garantit une base totalement isolée à chaque
+    # clic sur "Indexer les documents".
+    vectorstore = Chroma.from_documents(
+        chunks, embeddings, collection_name=f"session_{uuid.uuid4().hex}"
+    )
 
     return vectorstore, len(chunks)
 
 
-def format_semantic_results(results):
-    """Formate les chunks retrouvés en extraits bruts + source (Étape 3)."""
-    if not results:
+def format_semantic_results(results_with_scores):
+    """Formate les chunks retrouvés en extraits bruts + source + score (Étape 3)."""
+    if not results_with_scores:
         return "Aucun extrait pertinent trouvé dans les documents indexés."
 
     parts = []
-    for i, doc in enumerate(results, start=1):
+    for i, (doc, score) in enumerate(results_with_scores, start=1):
         source = doc.metadata.get("source", "source inconnue")
-        parts.append(f"**Extrait {i}** — *source : {source}*\n\n> {doc.page_content}")
+        # Plus le score est petit, plus le chunk est proche de la question
+        parts.append(
+            f"**Extrait {i}** — *source : {source}* "
+            f"(distance : `{score:.3f}`)\n\n> {doc.page_content}"
+        )
     return "\n\n---\n\n".join(parts)
 
 
@@ -137,10 +180,36 @@ def build_context(results):
         for doc in results
     )
 
+
+def retrieve_unique(vectorstore, query: str, k: int = 4, max_distance: float = 999):
+    """
+    Récupère les k meilleurs chunks :
+    - dédoublonnés
+    - filtrés par score de distance
+    [CALIBRATION TEMPORAIRE : max_distance=999 désactive le filtre pour
+    observer les scores réels avant de choisir une vraie valeur.]
+    """
+    results = vectorstore.similarity_search_with_score(query, k=k * 5)
+
+    seen = set()
+    unique = []
+    for doc, score in results:
+        if score > max_distance:
+            continue
+        text = doc.page_content.strip()
+        if text and text not in seen:
+            seen.add(text)
+            unique.append((doc, score))
+        if len(unique) >= k:
+            break
+    return unique
+
+
 st.set_page_config(page_title="Assistant Documentaire Local", layout="wide")
 
 st.title("Assistant Documentaire Local")
 st.caption("Système RAG local — Ratovonandrasana Aina Ny Antsa (ETU002754)")
+
 
 # ---------- BARRE LATÉRALE ----------
 with st.sidebar:
@@ -164,6 +233,7 @@ with st.sidebar:
             # l'utilisateur pense pourtant avoir supprimé.
             st.session_state.pop("vectorstore", None)
             st.session_state.pop("nb_chunks", None)
+            st.session_state.pop("indexed_filenames", None)
             st.session_state.messages = []
         else:
             # Déduplique par nom de fichier : si le même fichier a été
@@ -175,6 +245,11 @@ with st.sidebar:
                 vectorstore, nb_chunks = process_uploaded_files(unique_files)
                 st.session_state.vectorstore = vectorstore
                 st.session_state.nb_chunks = nb_chunks
+                # On garde la liste exacte des fichiers indexés, pour
+                # pouvoir l'afficher sans ambiguïté dans la sidebar (évite
+                # d'avoir à deviner ce qui est réellement dans la base à
+                # partir des réponses du chat).
+                st.session_state.indexed_filenames = [f.name for f in unique_files]
                 # On efface aussi l'historique de conversation : les
                 # anciens échanges faisaient référence à l'ancienne base
                 # de documents. Les garder affichés après un changement
@@ -189,6 +264,9 @@ with st.sidebar:
 
     if "vectorstore" in st.session_state:
         st.caption(f"Base indexée : {st.session_state.nb_chunks} fragments")
+        filenames = st.session_state.get("indexed_filenames", [])
+        if filenames:
+            st.caption("Fichiers réellement indexés : " + ", ".join(filenames))
 
     st.divider()
 
@@ -198,6 +276,7 @@ with st.sidebar:
     mode_label = "Assistant RAG complet" if use_llm else "Recherche sémantique pure"
     st.caption(f"Mode actuel : {mode_label}")
 
+
 # ---------- ZONE PRINCIPALE (CHAT) ----------
 
 # Initialisation de l'historique de conversation (persiste tant que l'app tourne)
@@ -206,33 +285,37 @@ if "messages" not in st.session_state:
 
 # Affichage de l'historique existant
 for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
+    avatar = "🧑" if message["role"] == "user" else "🗂️"
+    with st.chat_message(message["role"], avatar=avatar):
         st.markdown(message["content"])
 
 # Zone de saisie utilisateur
 if prompt := st.chat_input("Posez une question sur vos documents..."):
     # Ajout du message utilisateur à l'historique
     st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
+    with st.chat_message("user", avatar="🧑"):
         st.markdown(prompt)
 
-    # Placeholder de réponse : sera remplacé par la vraie logique
-    # de recherche (Étape 3) et de génération LLM (Étape 4)
-    with st.chat_message("assistant"):
+    with st.chat_message("assistant", avatar="🗂️"):
         if "vectorstore" not in st.session_state:
-            response = "⚠️ Veuillez d'abord indexer au moins un document."
+            response = "Veuillez d'abord indexer au moins un document."
             st.markdown(response)
 
         elif not use_llm:
             # Mode Recherche Sémantique pure : aucun appel à un modèle
             # génératif, on retourne les chunks bruts les plus proches.
-            results = st.session_state.vectorstore.similarity_search(prompt, k=RETRIEVAL_K)
-            response = format_semantic_results(results)
+            results_with_scores = retrieve_unique(
+                st.session_state.vectorstore, prompt, k=RETRIEVAL_K
+            )
+            response = format_semantic_results(results_with_scores)
             st.markdown(response)
 
         else:
             # Mode RAG complet : recherche + génération contrainte au contexte
-            results = st.session_state.vectorstore.similarity_search(prompt, k=RETRIEVAL_K)
+            results_with_scores = retrieve_unique(
+                st.session_state.vectorstore, prompt, k=RETRIEVAL_K
+            )
+            results = [doc for doc, _ in results_with_scores]
             context = build_context(results)
             final_prompt = RAG_PROMPT_TEMPLATE.format(context=context, question=prompt)
 
@@ -242,7 +325,7 @@ if prompt := st.chat_input("Posez une question sur vos documents..."):
                     response = llm.invoke(final_prompt)
                 except Exception as e:
                     response = (
-                        "❌ Impossible de contacter Ollama. Vérifie qu'il "
+                        "Impossible de contacter Ollama. Vérifie qu'il "
                         f"tourne bien en local avec le modèle `{OLLAMA_MODEL}` "
                         f"chargé (`ollama run {OLLAMA_MODEL}`).\n\nDétail : {e}"
                     )
@@ -250,7 +333,7 @@ if prompt := st.chat_input("Posez une question sur vos documents..."):
             st.markdown(response)
 
             # Transparence : on permet de vérifier les extraits utilisés
-            with st.expander("📄 Voir les extraits utilisés comme contexte"):
-                st.markdown(format_semantic_results(results))
+            with st.expander("Voir les extraits utilisés comme contexte"):
+                st.markdown(format_semantic_results(results_with_scores))
 
     st.session_state.messages.append({"role": "assistant", "content": response})
