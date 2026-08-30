@@ -4,16 +4,34 @@ import tempfile
 import streamlit as st
 from langchain_community.document_loaders import PyMuPDFLoader, TextLoader
 from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.llms import Ollama
 from langchain_community.vectorstores import Chroma
+from langchain_core.prompts import PromptTemplate
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 # ============================================================
 # ÉTAPE 1 : Squelette de l'interface
 # ÉTAPE 2 : Pipeline d'ingestion (extraction, chunking, vectorisation)
+# ÉTAPE 3 : Mode Recherche Sémantique pure
+# ÉTAPE 4 : Mode RAG complet (retrieval + génération contrainte)
 # ============================================================
 
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 PERSIST_DIR = "./chroma_db"
+OLLAMA_MODEL = "qwen2.5-coder:1.5b"  # doit correspondre au modèle chargé via `ollama pull`
+
+RAG_PROMPT_TEMPLATE = PromptTemplate(
+    input_variables=["context", "question"],
+    template=(
+        "Tu es un assistant qui répond UNIQUEMENT à partir du contexte "
+        "fourni ci-dessous. Si la réponse ne s'y trouve pas, dis "
+        "clairement que tu ne sais pas à partir des documents fournis. "
+        "N'utilise AUCUNE connaissance extérieure au contexte.\n\n"
+        "Contexte :\n{context}\n\n"
+        "Question : {question}\n\n"
+        "Réponse :"
+    ),
+)
 
 
 def process_uploaded_files(uploaded_files):
@@ -68,6 +86,14 @@ def format_semantic_results(results):
         source = doc.metadata.get("source", "source inconnue")
         parts.append(f"**Extrait {i}** — *source : {source}*\n\n> {doc.page_content}")
     return "\n\n---\n\n".join(parts)
+
+
+def build_context(results):
+    """Concatène les chunks récupérés en un bloc de contexte pour le LLM (Étape 4)."""
+    return "\n\n".join(
+        f"[Source : {doc.metadata.get('source', 'inconnue')}]\n{doc.page_content}"
+        for doc in results
+    )
 
 st.set_page_config(page_title="RAG Local - Clone NotebookLM", layout="wide")
 
@@ -142,8 +168,26 @@ if prompt := st.chat_input("Posez une question sur vos documents..."):
             st.markdown(response)
 
         else:
-            # Mode RAG complet : sera branché à l'Étape 4
-            response = "⚠️ Mode RAG complet pas encore branché (Étape 4 à venir)."
+            # Mode RAG complet : recherche + génération contrainte au contexte
+            results = st.session_state.vectorstore.similarity_search(prompt, k=4)
+            context = build_context(results)
+            final_prompt = RAG_PROMPT_TEMPLATE.format(context=context, question=prompt)
+
+            with st.spinner(f"Génération de la réponse avec {OLLAMA_MODEL}..."):
+                try:
+                    llm = Ollama(model=OLLAMA_MODEL)
+                    response = llm.invoke(final_prompt)
+                except Exception as e:
+                    response = (
+                        "❌ Impossible de contacter Ollama. Vérifie qu'il "
+                        f"tourne bien en local avec le modèle `{OLLAMA_MODEL}` "
+                        f"chargé (`ollama run {OLLAMA_MODEL}`).\n\nDétail : {e}"
+                    )
+
             st.markdown(response)
+
+            # Transparence : on permet de vérifier les extraits utilisés
+            with st.expander("📄 Voir les extraits utilisés comme contexte"):
+                st.markdown(format_semantic_results(results))
 
     st.session_state.messages.append({"role": "assistant", "content": response})
