@@ -6,6 +6,7 @@ from langchain_community.document_loaders import PyMuPDFLoader, TextLoader
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.llms import Ollama
 from langchain_community.vectorstores import Chroma
+from langchain_core.documents import Document
 from langchain_core.prompts import PromptTemplate
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
@@ -17,14 +18,16 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 # ============================================================
 
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-PERSIST_DIR = "./chroma_db"
 OLLAMA_MODEL = "qwen2.5-coder:1.5b"  # doit correspondre au modèle chargé via `ollama pull`
+RETRIEVAL_K = 4  # nombre de chunks les plus proches récupérés par question
 
 RAG_PROMPT_TEMPLATE = PromptTemplate(
     input_variables=["context", "question"],
     template=(
         "Tu es un assistant qui répond UNIQUEMENT à partir du contexte "
-        "fourni ci-dessous. Si la réponse ne s'y trouve pas, dis "
+        "fourni ci-dessous. Réponds toujours en français, même si le "
+        "contexte ou la question contient des mots dans une autre langue. "
+        "Si la réponse ne s'y trouve pas, dis "
         "clairement que tu ne sais pas à partir des documents fournis. "
         "N'utilise AUCUNE connaissance extérieure au contexte.\n\n"
         "Contexte :\n{context}\n\n"
@@ -54,12 +57,17 @@ def process_uploaded_files(uploaded_files):
 
         docs = loader.load()
 
-        # On remplace le chemin temporaire par le vrai nom du fichier
-        # dans les métadonnées, pour un affichage propre des sources.
-        for doc in docs:
-            doc.metadata["source"] = uploaded_file.name
+        # Les PDF sont chargés page par page (un Document par page). On
+        # fusionne tout le texte du fichier en UN SEUL Document avant le
+        # chunking : sinon le chunk_overlap ne peut jamais chevaucher deux
+        # pages, et un passage coupé pile à un saut de page (ex: un bloc de
+        # code qui commence en haut de la page suivante) est irrémédiablement
+        # séparé de son contexte.
+        full_text = "\n".join(doc.page_content for doc in docs)
+        all_docs.append(
+            Document(page_content=full_text, metadata={"source": uploaded_file.name})
+        )
 
-        all_docs.extend(docs)
         os.remove(tmp_path)
 
     # Chunking : chunk_size=1000 pour garder un paragraphe avec son
@@ -69,9 +77,14 @@ def process_uploaded_files(uploaded_files):
     chunks = text_splitter.split_documents(all_docs)
 
     embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
-    vectorstore = Chroma.from_documents(
-        chunks, embeddings, persist_directory=PERSIST_DIR
-    )
+
+    # Chroma est utilisé en mémoire (sans persist_directory) : la base est
+    # de toute façon reconstruite à chaque clic sur "Indexer les documents"
+    # ou à chaque redémarrage de l'app (via st.session_state), donc une
+    # persistance disque n'apporte rien ici. Ça évite aussi un problème de
+    # verrouillage de fichiers sous Windows si on tentait de supprimer une
+    # base précédente encore ouverte par le processus.
+    vectorstore = Chroma.from_documents(chunks, embeddings)
 
     return vectorstore, len(chunks)
 
@@ -163,19 +176,19 @@ if prompt := st.chat_input("Posez une question sur vos documents..."):
         elif not use_llm:
             # Mode Recherche Sémantique pure : aucun appel à un modèle
             # génératif, on retourne les chunks bruts les plus proches.
-            results = st.session_state.vectorstore.similarity_search(prompt, k=4)
+            results = st.session_state.vectorstore.similarity_search(prompt, k=RETRIEVAL_K)
             response = format_semantic_results(results)
             st.markdown(response)
 
         else:
             # Mode RAG complet : recherche + génération contrainte au contexte
-            results = st.session_state.vectorstore.similarity_search(prompt, k=4)
+            results = st.session_state.vectorstore.similarity_search(prompt, k=RETRIEVAL_K)
             context = build_context(results)
             final_prompt = RAG_PROMPT_TEMPLATE.format(context=context, question=prompt)
 
             with st.spinner(f"Génération de la réponse avec {OLLAMA_MODEL}..."):
                 try:
-                    llm = Ollama(model=OLLAMA_MODEL)
+                    llm = Ollama(model=OLLAMA_MODEL, temperature=0)
                     response = llm.invoke(final_prompt)
                 except Exception as e:
                     response = (
