@@ -1,25 +1,35 @@
 """
 Configuration centralisée du système RAG.
 
-Regrouper ces constantes ici évite d'avoir des "nombres magiques" ou des
-chaînes dupliquées dans plusieurs modules (ingestion, retrieval, app...).
-Pour changer de modèle d'embedding ou de LLM, un seul fichier à modifier.
+Toutes les constantes ajustables (modèles, taille des chunks, seuils...)
+sont regroupées ici pour éviter de les disperser dans le code métier.
 """
 
 from langchain_core.prompts import PromptTemplate
 
+# --- Modèles ---
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 OLLAMA_MODEL = "qwen2.5-coder:1.5b"  # doit correspondre au modèle pull via `ollama pull`
+
+# --- Retrieval ---
 RETRIEVAL_K = 4  # nombre de chunks récupérés par question
 
-# Justification du chunking (demandée par l'énoncé) :
-# chunk_size=1000 pour garder un paragraphe entier avec son contexte,
-# chunk_overlap=150 (15%) pour ne pas couper une idée importante pile
-# à la frontière entre deux chunks.
+# --- Découpage (chunking) ---
+# 1000 caractères pour garder un paragraphe complet avec son contexte,
+# et 150 de chevauchement (15%) pour ne pas couper une idée pile à la
+# frontière entre deux chunks.
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 150
 CHUNK_SEPARATORS = ["\n\n", "\n", ". ", " ", ""]
 
+# --- Filtrage de pertinence (mode RAG uniquement) ---
+# On a essayé un seuil de distance fixe au départ, mais les scores ne
+# montrent pas de coupure nette entre pertinent et hors sujet sur nos
+# documents. 0.15 = un chunk doit être au moins 15% plus proche que la
+# moyenne du lot récupéré pour être gardé.
+RELEVANCE_MARGIN = 0.15
+
+# --- Prompt du mode RAG ---
 RAG_PROMPT_TEMPLATE = PromptTemplate(
     input_variables=["context", "question"],
     template=(

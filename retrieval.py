@@ -1,55 +1,63 @@
 """
-Recherche dans la base vectorielle et mise en forme des résultats.
-
-Étape 3 (recherche sémantique pure) et brique de base de l'Étape 4
-(le RAG complet réutilise retrieve_unique + build_context).
+Recherche vectorielle et filtrage de pertinence.
 """
 
+from langchain_community.vectorstores import Chroma
+from langchain_core.documents import Document
 
-def retrieve_unique(vectorstore, query: str, k: int = 4, max_distance: float = 999):
-    """Récupère les k meilleurs chunks, dédupliqués.
+from config import RELEVANCE_MARGIN, RETRIEVAL_K
 
-    max_distance=999 désactive le filtrage par seuil : on a testé un vrai
-    seuil de pertinence, mais les scores mesurés sur nos documents ne
-    montrent pas de coupure nette entre pertinent et hors-sujet (écart
-    d'à peine 0.01 dans certains cas), donc un seuil fixe ferait plus de
-    mal que de bien. On garde k=4 fixe, plus simple et plus fiable.
+
+def retrieve_candidates(
+    vectorstore: Chroma, query: str, k: int = RETRIEVAL_K
+) -> tuple[list[tuple[Document, float]], list[float]]:
+    """Récupère les k meilleurs chunks pour la question, dédupliqués.
+
+    Ne filtre pas par pertinence : sert de base au mode Recherche
+    Sémantique pure, qui doit montrer les résultats bruts pour laisser
+    l'utilisateur juger lui-même. Renvoie aussi les scores du lot élargi
+    (k*5, avant dédoublonnage), réutilisés par filter_if_relevant.
     """
-    results = vectorstore.similarity_search_with_score(query, k=k * 5)
+    pool = vectorstore.similarity_search_with_score(query, k=k * 5)
+    pool_scores = [score for _, score in pool]
 
     seen = set()
     unique = []
-    for doc, score in results:
-        if score > max_distance:
-            continue
+    for doc, score in pool:
         text = doc.page_content.strip()
         if text and text not in seen:
             seen.add(text)
             unique.append((doc, score))
         if len(unique) >= k:
             break
-    return unique
+
+    return unique, pool_scores
 
 
-def build_context(results):
-    """Concatène les chunks récupérés en un bloc de contexte pour le LLM (Étape 4)."""
-    return "\n\n".join(
-        f"[Source : {doc.metadata.get('source', 'inconnue')}]\n{doc.page_content}"
-        for doc in results
-    )
+def compute_relevance_ceiling(pool_scores: list[float], margin: float = RELEVANCE_MARGIN):
+    """Calcule le seuil de distance en dessous duquel un chunk est jugé pertinent.
+
+    Séparé de filter_if_relevant pour pouvoir aussi afficher ce chiffre à
+    l'utilisateur (calibrage de RELEVANCE_MARGIN) sans dupliquer le calcul.
+    """
+    if not pool_scores:
+        return None
+    avg_score = sum(pool_scores) / len(pool_scores)
+    return avg_score * (1 - margin)
 
 
-def format_semantic_results(results_with_scores):
-    """Formate les chunks retrouvés en extraits bruts + source + score (Étape 3)."""
-    if not results_with_scores:
-        return "Aucun extrait pertinent trouvé dans les documents indexés."
+def filter_if_relevant(
+    results_with_scores: list[tuple[Document, float]],
+    pool_scores: list[float],
+    margin: float = RELEVANCE_MARGIN,
+) -> list[tuple[Document, float]]:
+    """Ne garde les résultats que si un chunk se détache nettement du lot.
 
-    parts = []
-    for i, (doc, score) in enumerate(results_with_scores, start=1):
-        source = doc.metadata.get("source", "source inconnue")
-        # Score = distance : plus petit veut dire plus proche de la question
-        parts.append(
-            f"**Extrait {i}** — *source : {source}* "
-            f"(distance : `{score:.3f}`)\n\n> {doc.page_content}"
-        )
-    return "\n\n---\n\n".join(parts)
+    Réservé au mode RAG : contrairement au mode recherche pure, ici un
+    LLM va générer une réponse, donc autant vérifier qu'on a vraiment de
+    quoi répondre avant de l'appeler.
+    """
+    ceiling = compute_relevance_ceiling(pool_scores, margin)
+    if ceiling is None or not results_with_scores:
+        return []
+    return [(doc, score) for doc, score in results_with_scores if score <= ceiling]
