@@ -1,0 +1,57 @@
+Guide de test — Système RAG local
+
+1. Présentation du projet
+
+Un système RAG (Retrieval-Augmented Generation) combine la recherche d'informations dans des documents avec un modèle de langage. Son objectif est de retrouver les passages pertinents d'une base documentaire avant de générer une réponse.
+
+Un RAG local peut être utilisé pour interroger des documents sans envoyer leur contenu vers un service distant, selon les modèles et outils utilisés.
+
+2. Fonctionnement général
+
+Le fonctionnement d'un RAG peut être résumé en cinq étapes :
+
+- Chargement des documents.
+- Découpage des documents en petits passages appelés chunks.
+- Transformation des chunks en vecteurs à l'aide d'un modèle d'embedding.
+- Recherche des passages les plus proches de la question.
+- Génération d'une réponse à partir des passages récupérés.
+
+3. Exemple de données
+
+Une bibliothèque universitaire possède 500 ordinateurs répartis dans plusieurs salles. La salle A contient 120 ordinateurs, la salle B contient 180 ordinateurs et la salle C contient 200 ordinateurs.
+
+Le service informatique est composé de six personnes : deux administrateurs systèmes, deux techniciens réseau, un développeur et un responsable informatique.
+
+Les sauvegardes des serveurs sont réalisées chaque soir à 23 h. Une sauvegarde complète est effectuée chaque dimanche. Les sauvegardes sont conservées pendant 30 jours.
+
+Le réseau de la bibliothèque utilise trois segments : le réseau administratif 192.168.10.0/24, le réseau étudiant 192.168.20.0/24 et le réseau des serveurs 192.168.30.0/24.
+
+Le serveur web interne utilise l'adresse 192.168.30.10. Le serveur de fichiers utilise l'adresse 192.168.30.20.
+
+4. Politique de sécurité
+
+Les utilisateurs doivent utiliser un mot de passe d'au moins 12 caractères. L'authentification multifacteur est obligatoire pour les administrateurs.
+
+Les étudiants ne doivent pas avoir accès directement au réseau administratif. Les serveurs doivent être isolés du réseau étudiant à l'aide de règles de pare-feu.
+
+Les journaux de sécurité sont conservés pendant 90 jours. Une revue des comptes utilisateurs est réalisée chaque trimestre.
+
+5. Incident exemple
+
+Le 15 juin, le service informatique a détecté plusieurs tentatives de connexion inhabituelles sur le serveur web interne. Les tentatives provenaient du réseau étudiant.
+
+Après analyse, le pare-feu a été configuré pour bloquer les connexions directes du réseau étudiant vers le réseau des serveurs. Le compte concerné a également été désactivé temporairement.
+
+6. Informations importantes à retenir
+
+- Nombre total d'ordinateurs : 500.
+- Salle A : 120 ordinateurs.
+- Salle B : 180 ordinateurs.
+- Salle C : 200 ordinateurs.
+- Personnel informatique : 6 personnes.
+- Sauvegarde quotidienne : 23 h.
+- Sauvegarde complète : dimanche.
+- Rétention des sauvegardes : 30 jours.
+- Rétention des journaux : 90 jours.
+- Serveur web : 192.168.30.10.
+- Serveur de fichiers : 192.168.30.20.
