@@ -1,47 +1,129 @@
-# Assistant Documentaire Local — v2 (refactorisée)
+# Assistant Documentaire Local
 
-Système RAG local (clone de NotebookLM) — Master 1, module *Introduction
-et Pratique de l'IA*.
+Système RAG local permettant d'interroger des documents à l'aide d'un modèle de langage local, sans dépendre d'une API externe.
 
-Auteur : Ratovonandrasana Aina Ny Antsa (ETU002754)
+Projet réalisé dans le cadre du Master 1, module *Introduction et Pratique de l'IA*.
+
+**Auteur : Ratovonandrasana Aina Ny Antsa (ETU002754)**
 
 ## Structure du projet
 
-La v1 tenait dans un seul fichier `app.py`. En v2, la logique métier est
-séparée de l'interface Streamlit, module par module :
+```text
+.
+├── src/
+│   ├── app.py
+│   ├── config.py
+│   ├── loaders.py
+│   ├── ingestion.py
+│   ├── retrieval.py
+│   ├── generation.py
+│   └── formatting.py
+│
+├── data/
+│   └── documents/
+│       ├── rag_test_centre_formation.pdf
+│       ├── rag_test_exemple.txt
+│       └── rag_test_nouveau_contexte.md
+│
+├── test/
+│   └── tests_complets_rag.md
+│
+├── requirements.txt
+└── README.md
+```
 
-| Fichier            | Rôle                                                             |
-|---------------------|-------------------------------------------------------------------|
-| `config.py`         | Constantes (modèles, taille des chunks, seuils) et prompt RAG    |
-| `loaders.py`        | Lecture des fichiers sources (PDF, TXT/MD avec détection d'encodage) |
-| `ingestion.py`      | Pipeline : découpage en chunks + vectorisation (Chroma)          |
-| `retrieval.py`      | Recherche vectorielle + filtrage de pertinence                   |
-| `generation.py`     | Construction du contexte + appel au LLM local (Ollama)           |
-| `formatting.py`     | Mise en forme des extraits pour l'affichage                      |
-| `app.py`            | Interface Streamlit uniquement (widgets, session_state, chat)    |
+### Description des principaux fichiers
 
-Chaque module est testable indépendamment de Streamlit, à l'exception de
-`ingestion.py` qui utilise `st.cache_resource` pour éviter de recharger
-le modèle d'embedding à chaque interaction.
+| Fichier                      | Rôle                                                                         |
+| ---------------------------- | ---------------------------------------------------------------------------- |
+| `src/app.py`                 | Interface utilisateur Streamlit et gestion du chat                           |
+| `src/config.py`              | Configuration des modèles, paramètres et prompt RAG                          |
+| `src/loaders.py`             | Chargement et lecture des documents PDF, TXT et Markdown                     |
+| `src/ingestion.py`           | Découpage des documents en chunks et création des embeddings                 |
+| `src/retrieval.py`           | Recherche des passages pertinents dans la base vectorielle                   |
+| `src/generation.py`          | Construction du contexte et génération de la réponse avec Ollama             |
+| `src/formatting.py`          | Mise en forme des extraits affichés dans l'interface                         |
+| `data/documents/`            | Documents utilisés pour tester le système RAG                                |
+| `test/tests_complets_rag.md` | Exemples de questions permettant de tester le RAG avec les documents fournis |
 
-## Lancer le projet
+## Installation
+
+Installer les dépendances Python :
 
 ```bash
 pip install -r requirements.txt
-ollama pull qwen2.5-coder:1.5b   # une seule fois
-ollama serve                     # si le service n'est pas déjà lancé
-streamlit run app.py
 ```
+
+Le projet utilise notamment un modèle d'embedding local :
+
+```text
+sentence-transformers/all-MiniLM-L6-v2
+```
+
+Aucune API externe n'est nécessaire pour l'indexation des documents.
+
+## Configuration d'Ollama
+
+Installer Ollama puis télécharger le modèle utilisé par le projet :
+
+```bash
+ollama pull qwen2.5-coder:1.5b
+```
+
+Démarrer ensuite le serveur Ollama s'il n'est pas déjà actif :
+
+```bash
+ollama serve
+```
+
+## Lancer le projet
+
+Depuis la racine du projet, exécuter :
+
+```bash
+python -m streamlit run src/app.py
+```
+
+L'application Streamlit s'ouvre ensuite dans le navigateur.
+
+## Documents de test
+
+Trois documents sont fournis dans `data/documents/` :
+
+* `rag_test_centre_formation.pdf`
+* `rag_test_exemple.txt`
+* `rag_test_nouveau_contexte.md`
+
+Ils permettent de tester le chargement, l'indexation, la recherche sémantique et la génération de réponses.
+
+Des exemples de questions sont disponibles dans :
+
+```text
+test/tests_complets_rag.md
+```
+
+Ce fichier peut être utilisé comme guide pour vérifier le comportement du système avec les différents documents.
 
 ## Fonctionnement
 
-1. **Indexation** : les documents chargés (PDF, TXT, MD) sont extraits,
-   découpés en fragments (chunks) puis vectorisés localement
-   (`sentence-transformers/all-MiniLM-L6-v2`), sans appel à une API
-   externe.
-2. **Recherche sémantique pure** : renvoie les extraits bruts les plus
-   proches de la question, avec leur score de distance — pour auditer la
-   base vectorielle sans filtrage de pertinence.
-3. **Assistant RAG complet** : ne garde que les extraits qui se
-   détachent nettement du lot récupéré, puis génère une réponse avec un
-   modèle local (Ollama), strictement contrainte au contexte fourni.
+Le système fonctionne selon un pipeline RAG (*Retrieval-Augmented Generation*) :
+
+1. **Chargement des documents**
+   Les fichiers PDF, TXT et Markdown sont lus et leur contenu est extrait.
+
+2. **Découpage**
+   Les documents sont divisés en plusieurs fragments (*chunks*) afin de faciliter la recherche.
+
+3. **Vectorisation**
+   Chaque fragment est transformé en vecteur à l'aide du modèle `all-MiniLM-L6-v2`.
+
+4. **Recherche sémantique**
+   Lorsqu'une question est posée, les passages les plus proches sémantiquement sont recherchés dans la base vectorielle.
+
+5. **Construction du contexte**
+   Les passages pertinents sont regroupés afin de constituer le contexte transmis au modèle.
+
+6. **Génération de la réponse**
+   Le modèle local `qwen2.5-coder:1.5b`, exécuté avec Ollama, génère une réponse basée sur le contexte récupéré.
+
+L'ensemble du traitement des documents, des embeddings et de la génération est réalisé localement.
