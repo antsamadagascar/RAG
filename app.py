@@ -50,13 +50,11 @@ CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 150
 CHUNK_SEPARATORS = ["\n\n", "\n", ". ", " ", ""]
 
-# Filtrage de pertinence (utilisé uniquement en mode RAG, voir plus bas).
-# On avait d'abord essayé un seuil de distance fixe pour écarter les
-# chunks hors sujet, mais sur nos documents les scores ne montrent pas de
-# coupure nette : un seuil fixe filtrait soit trop, soit pas assez selon
-# la question. À la place, un chunk n'est gardé que s'il est nettement
-# plus proche que la moyenne du lot récupéré. 0.15 veut dire "au moins 15%
-# plus proche que la moyenne". À ajuster selon vos documents.
+# Filtrage de pertinence (mode RAG uniquement, voir plus bas). On a
+# essayé un seuil de distance fixe au départ, mais les scores ne montrent
+# pas de coupure nette entre pertinent et hors sujet sur nos documents.
+# 0.15 = un chunk doit être au moins 15% plus proche que la moyenne du
+# lot récupéré pour être gardé.
 RELEVANCE_MARGIN = 0.15
 
 
@@ -79,10 +77,9 @@ RAG_PROMPT_TEMPLATE = PromptTemplate(
 def read_text_with_fallback(path):
     """Lit un fichier .txt/.md en devinant son encodage.
 
-    Tous les fichiers texte ne sont pas en UTF-8 (Windows en produit
-    souvent en UTF-16 ou en Windows-1252). On regarde d'abord s'il y a un
-    BOM ou beaucoup d'octets nuls (signe classique d'UTF-16), sinon on
-    teste UTF-8, Windows-1252 et Latin-1 dans cet ordre.
+    Windows produit souvent du texte en UTF-16 ou en Windows-1252, pas en
+    UTF-8. On vérifie d'abord la présence d'un BOM ou d'octets nuls (signe
+    typique d'UTF-16), sinon on essaie UTF-8, Windows-1252 puis Latin-1.
     """
     raw_bytes = open(path, "rb").read()
 
@@ -109,13 +106,10 @@ def read_text_with_fallback(path):
 
 @st.cache_resource(show_spinner=False)
 def get_embeddings_model():
-    """Charge le modèle d'embedding une seule fois pour toute la session serveur.
+    """Charge le modèle d'embedding une seule fois par session serveur.
 
-    Avant, chaque clic sur "Indexer" recréait un HuggingFaceEmbeddings
-    depuis zéro (rechargement du modèle en mémoire à chaque fois), ce qui
-    expliquait une bonne partie de la lenteur ressentie. st.cache_resource
-    garde l'objet en mémoire entre les réindexations tant que le serveur
-    Streamlit tourne : il n'est chargé qu'une seule fois.
+    Sans ce cache, chaque clic sur "Indexer" rechargeait le modèle depuis
+    zéro, ce qui expliquait une bonne partie de la lenteur au démarrage.
     """
     return HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
 
@@ -186,15 +180,10 @@ def process_uploaded_files(uploaded_files):
 def retrieve_candidates(vectorstore, query: str, k: int = 4):
     """Récupère les k meilleurs chunks pour la question, dédupliqués.
 
-    Ne filtre PAS par pertinence : montre ce qui est le plus proche, quel
-    que soit son intérêt réel. C'est voulu — ça sert de base au mode
-    "Recherche sémantique pure" (Étape 3), qui doit permettre d'auditer la
-    base vectorielle telle qu'elle est, distance affichée, et laisser
-    l'utilisateur juger lui-même de la pertinence plutôt que de la cacher.
-
-    Retourne aussi les scores du lot élargi (k*5, avant dédoublonnage) :
-    ils servent ensuite (filter_if_relevant) à estimer si les meilleurs
-    résultats se détachent vraiment du reste ou pas.
+    Ne filtre pas par pertinence : sert de base au mode Recherche
+    Sémantique pure (Étape 3), qui doit montrer les résultats bruts pour
+    laisser l'utilisateur juger lui-même. Renvoie aussi les scores du lot
+    élargi (k*5, avant dédoublonnage), réutilisés par filter_if_relevant.
     """
     pool = vectorstore.similarity_search_with_score(query, k=k * 5)
     pool_scores = [score for _, score in pool]
@@ -225,20 +214,11 @@ def compute_relevance_ceiling(pool_scores, margin: float = RELEVANCE_MARGIN):
 
 
 def filter_if_relevant(results_with_scores, pool_scores, margin: float = RELEVANCE_MARGIN):
-    """Ne garde les résultats que si au moins un chunk se détache nettement du lot.
+    """Ne garde les résultats que si un chunk se détache nettement du lot.
 
-    Utilisé uniquement par le mode RAG complet (Étape 4) : là, un LLM va
-    générer une réponse, donc il faut décider si on a vraiment de quoi
-    répondre avant de l'appeler — contrairement au mode recherche pure,
-    qui montre toujours le top-k brut.
-
-    On avait essayé un seuil de distance fixe, mais sans coupure nette
-    dans les scores ça ne filtrait rien d'utile (une question totalement
-    hors sujet obtenait quand même une réponse du LLM, qui comblait avec
-    ses connaissances générales malgré la consigne du prompt). À la place
-    on compare le meilleur résultat à la moyenne du lot élargi : s'il
-    n'est pas nettement plus proche (au moins `margin` de mieux), on
-    considère qu'aucun chunk n'apporte plus qu'un chunk pris au hasard.
+    Réservé au mode RAG (Étape 4) : contrairement au mode recherche pure,
+    ici un LLM va générer une réponse, donc autant vérifier qu'on a
+    vraiment de quoi répondre avant de l'appeler.
     """
     ceiling = compute_relevance_ceiling(pool_scores, margin)
     if ceiling is None or not results_with_scores:
@@ -365,12 +345,8 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 
 # Réaffiche l'historique existant à chaque rechargement de la page.
-# Chaque message peut porter un "caption" (petit avertissement) et/ou un
-# expander (extraits) en plus de son contenu principal : avant, ces
-# éléments n'étaient affichés qu'au moment du direct et disparaissaient
-# dès le message suivant, car ils n'étaient jamais sauvegardés. On les
-# stocke maintenant dans le message lui-même pour qu'ils survivent au
-# réaffichage de l'historique.
+# Chaque message peut avoir un "caption" et/ou un expander en plus du
+# contenu principal, sauvegardés avec lui pour rester visibles après.
 for message in st.session_state.messages:
     avatar = "🧑" if message["role"] == "user" else "📚"
     with st.chat_message(message["role"], avatar=avatar):
@@ -386,9 +362,8 @@ if prompt := st.chat_input("Posez une question sur vos documents..."):
     with st.chat_message("user", avatar="🧑"):
         st.markdown(prompt)
 
-    # On construit la réponse dans un dict pour pouvoir à la fois
-    # l'afficher tout de suite ET la sauvegarder telle quelle dans
-    # l'historique (voir le commentaire ci-dessus).
+    # Dict plutôt que variable simple : on affiche la réponse tout de
+    # suite, puis on sauvegarde ce même dict dans l'historique.
     assistant_message = {"role": "assistant", "content": ""}
 
     with st.chat_message("assistant", avatar="📚"):
@@ -435,11 +410,12 @@ if prompt := st.chat_input("Posez une question sur vos documents..."):
                     )
                     st.markdown(assistant_message["content"])
 
+                    # Petit indicateur pour comprendre le rejet (distance
+                    # moyenne du lot vs seuil retenu), sans jargon de code.
                     ceiling = compute_relevance_ceiling(pool_scores)
                     calibration_note = (
-                        f"*(Calibrage : distance moyenne du lot = `{sum(pool_scores) / len(pool_scores):.3f}`, "
-                        f"seuil de pertinence = `{ceiling:.3f}` avec RELEVANCE_MARGIN={RELEVANCE_MARGIN}. "
-                        "Si ce rejet semble injustifié, augmentez RELEVANCE_MARGIN dans le code.)*"
+                        f"*(Distance moyenne des extraits trouvés : `{sum(pool_scores) / len(pool_scores):.3f}`, "
+                        f"seuil de pertinence : `{ceiling:.3f}`)*"
                     )
                     assistant_message["expander_label"] = (
                         "Voir les extraits les plus proches trouvés (jugés pas assez pertinents)"
