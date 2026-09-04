@@ -1,5 +1,8 @@
 """
 Recherche vectorielle et filtrage de pertinence.
+
+Auteur : Ratovonandrasana Aina Ny Antsa (ETU002754)
+
 """
 
 from langchain_community.vectorstores import Chroma

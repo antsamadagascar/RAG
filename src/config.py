@@ -1,6 +1,8 @@
 """
 Configuration centralisée du système RAG.
 
+Auteur : Ratovonandrasana Aina Ny Antsa (ETU002754)
+
 Toutes les constantes ajustables (modèles, taille des chunks, seuils...)
 sont regroupées ici pour éviter de les disperser dans le code métier.
 """

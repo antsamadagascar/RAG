@@ -1,5 +1,8 @@
 """
 Construction du contexte et génération de la réponse via le LLM local (Ollama).
+
+Auteur : Ratovonandrasana Aina Ny Antsa (ETU002754)
+
 """
 
 from langchain_community.llms import Ollama

@@ -1,5 +1,8 @@
 """
 Mise en forme des résultats pour l'affichage Streamlit.
+
+Auteur : Ratovonandrasana Aina Ny Antsa (ETU002754)
+
 """
 
 from langchain_core.documents import Document

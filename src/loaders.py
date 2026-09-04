@@ -1,5 +1,8 @@
 """
 Chargement des fichiers sources (PDF, TXT, MD) en texte brut.
+
+Auteur : Ratovonandrasana Aina Ny Antsa (ETU002754)
+
 """
 
 import os

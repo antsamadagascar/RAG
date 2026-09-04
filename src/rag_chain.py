@@ -1,6 +1,8 @@
 """
 Génération contrainte au contexte via un LLM local (Ollama).
 
+Auteur : Ratovonandrasana Aina Ny Antsa (ETU002754)
+
 Étape 4 du sujet. Isoler l'appel au LLM ici permet, par exemple, de le
 remplacer plus tard par un autre backend local sans toucher à l'UI ni au
 pipeline de retrieval.

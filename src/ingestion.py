@@ -1,5 +1,8 @@
 """
 Pipeline d'ingestion : extraction -> découpage -> vectorisation.
+
+Auteur : Ratovonandrasana Aina Ny Antsa (ETU002754)
+
 """
 
 import os
